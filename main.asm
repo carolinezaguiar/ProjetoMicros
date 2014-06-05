@@ -113,8 +113,11 @@ START
     call dataw
     movlw 0x61          ;a
     call dataw
-fim
-    goto fim
+	
+polling
+	call checkkeypad
+	call dataw
+    goto polling
 
 ;SUBROTINAS
 ;============== piscaled ==============
@@ -156,6 +159,43 @@ dataw
     bcf PORTD, E
     call delay10ms
     return
+;============== checkkeypad ==============
+checkkeypad
+	movlw 0x0
+	; scan the 1st column
+	bsf PORTB, 0x03
+	btfsc PORTB, 0x02		;1?
+	movlw 0x031	
+	btfsc PORTB, 0x07		;4?
+	movlw 0x034	
+	btfsc PORTB, 0x06		;7?
+	movlw 0x037
+	btfsc PORTB, 0x04		;*?
+	movlw 0x02a
+	bcf PORTB, 0x03
+	; scan the 2nd column
+	bsf PORTB, 0x01			
+	btfsc PORTB, 0x02		;2?
+	movlw 0x032
+	btfsc PORTB, 0x07		;5?
+	movlw 0x035	
+	btfsc PORTB, 0x06		;8?
+	movlw 0x038	
+	btfsc PORTB, 0x04		;0?
+	movlw 0x030	
+	bcf PORTB, 0x01
+	; scan the 3rd column
+	bsf PORTB, 0x05			
+	btfsc PORTB, 0x02		;3?
+	movlw 0x033		
+	btfsc PORTB, 0x07		;6?
+	movlw 0x036		
+	btfsc PORTB, 0x06		;9?
+	movlw 0x039		
+	btfsc PORTB, 0x04		;#?
+	movlw 0x023		
+	bcf PORTB, 0x05
+	return
 ;============== Delay100us ==============
 ;Precisa 500 ciclos de instrucao, pois uma instrucao -> 0.2 us
 ;A formula para 500 ciclos e:
