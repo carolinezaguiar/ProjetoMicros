@@ -17,22 +17,27 @@ TRISA       EQU 0x85
 TRISB       EQU 0x86
 TRISC       EQU 0x87
 TRISD       EQU 0x88
-INTCON2		EQU 0x10b
-EEDATA		EQU 0x10c 
-EEADR		EQU 0x10d
-EEDATH		EQU 0x10e
-EEADRH		EQU 0x10f
-INTCON3		EQU 0x18b
-EECON1		EQU 0x10c 
-EECON2		EQU 0x10d
+INTCON2		EQU 0x10B
+EEDATA		EQU 0x10C
+EEADR		EQU 0x10D
+EEDATH		EQU 0x10E
+EEADRH		EQU 0x10F
+INTCON3		EQU 0x18B
+EECON1		EQU 0x10C
+EECON2		EQU 0x10D
 RD			EQU 0x00
 WR			EQU 0x01
 WREN		EQU 0x02
 EEPGD		EQU 0x07
+W			EQU 0
+F			EQU 0x01
 E           EQU 0x00
 RW          EQU 0x01
 RS          EQU 0x02
+RP0         EQU 0x05
+RP1         EQU 0x06
 LED         EQU 0x00
+FECHADURA   EQU 0x00
 COL0        EQU 0x03
 COL1        EQU 0x01
 COL2        EQU 0x05
@@ -44,6 +49,7 @@ LIN3        EQU 0x04
 KEYPRESSED  EQU 0x00
 LEDON       EQU 0x01
 SENHAERRADA	EQU 0x02
+ABREON      EQU 0X03
 ;ASCII
 ASCESP      EQU 0x20    ;espaco
 ASCEXC      EQU 0x21    ;!
@@ -143,8 +149,10 @@ ASCz        EQU 0x7A
     nrochars
     nrocharsaux
     input
-	dataeeaddr
     ENDC
+	CBLOCK 0x120
+	dataeeaddr
+	ENDC
 ;=======================================================
     org 0x0000
     goto START
@@ -239,12 +247,15 @@ incorreta
     goto cleardisplay
 correta
     call msg_portaaberta
-    call delay1s
-    call delay1s
+    call abreporta
 	goto cleardisplay
 	 
 ;SUBROTINAS
 ;============== configurasenha ==============
+;Escolher uma nova senha para a fechadura
+;Usuario escolhe de quantos digitos sera a
+;nova senha e fornece os novos valores
+;============================================ 
 configurasenha
 	call msg_setarnovasenha
 	call msg_chars1to9
@@ -285,7 +296,7 @@ peganrochars
     call delay500ms
     ;fim imprime o numero selecionado e faz piscar 3 vezes
     
-    ;nro cacacteres entre 1 a 9
+    ;verifica se eh nro cacacteres entre 1 a 9
     movlw ASC0
     xorwf nrochars, 0
     btfsc STATUS, ZFLAG
@@ -300,12 +311,14 @@ peganrochars
     goto nrocharinvalido
     goto continuaconfiguracao
     
+;valor invalido para nro de char
 nrocharinvalido
 	call msg_numeroinvalido
     call delay1s
     call delay1s
     goto configurasenha
 
+;usuario escolhe a nova senha
 continuaconfiguracao
 	call msg_setarnovasenha
     call msg_brackets
@@ -318,6 +331,7 @@ setasenha1
     decfsz nrochars, 1
     goto setasenha2
     goto setasenha3
+;le char do keypad
 setasenha2
 	call checkkeypad
     movwf input
@@ -331,6 +345,8 @@ setasenha2
 	call descobrechar
     call delay500ms
     goto setasenha1
+;nova senha foi inserida
+;armazena na eeprom
 setasenha3
     call completacompontos
     call msg_senhasetada
@@ -338,9 +354,10 @@ setasenha3
     call writepass
     return
 ;============== completacompontos ==============
-;apos a senha ter sido inserida, completa com pontos
-;ate o final da segunda linha, ao final nrochars
-;contera o numero inicial de caracteres da senha
+;apos a senha ter sido inserida, completa com 
+;pontos ate o final da segunda linha, ao final 
+;nrochars contera o numero inicial de caracteres 
+;da senha
 ;===============================================
 completacompontos
     movf nrocharsaux, 0
@@ -548,11 +565,17 @@ nonocharv
 senhaerrada
     bsf flags, SENHAERRADA 
     return
-;============== abre porta ==============
+;================== abre porta =================
+;Mantém o LED aceso por 3s para indicar
+;que a porta está aberta
+;===============================================
 abreporta
-;TODO!!!
-	return
-    
+    bsf flags, ABREON
+    bsf PORTB, FECHADURA
+    call delay5s
+    bcf flags, ABREON
+    bcf PORTB, FECHADURA
+    return
 ;================== piscaled ===================
 ;rotina para piscar o LED periodicamente
 ;garantindo que o microcontrolador esta
@@ -586,7 +609,7 @@ instw
     call delay10ms
     return
 ;==================== dataw ====================
-;data write noi LCD dado a ser escrito 
+;data write no LCD dado a ser escrito 
 ;armazenado no W antes da chamada
 ;===============================================
 dataw 
@@ -597,204 +620,197 @@ dataw
     call delay10ms
     return
 ;=========== readpassword =============
-;Read the password stored in the eeprom
+;Lê a senha armazenada na eeprom 
+;======================================
 readpass
-    movlw 0x0
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+    movlw 0x00
     movwf dataeeaddr
-	;char1
 	call readeeprom
 	movwf char1
-	;char2
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf char2
-	;char3
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf char3
-	;char4
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf char4
-	;char5
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf char5
-    ;char6
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf char6
-    ;char7
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf char7
-    ;char8
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf char8
-    ;char8
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf char9
-    ;nrochars
-	incf dataeeaddr, 0
 	call readeeprom
 	movwf nrochars
-	movlw 0x0
-    movwf dataeeaddr
     return
 ;============== readeeprom ===============
 readeeprom
-	banksel EEDATA
-	movf dataeeaddr, 0
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	banksel EECON1
+    bsf STATUS, RP0     ; Bank3
 	bcf EECON1, EEPGD
 	bsf EECON1, RD
-	banksel EEDATA
-	movf EEDATA, 0
+    bcf STATUS, RP0     ; Bank2
+	movf EEDATA, W
+	incf dataeeaddr, 1
     banksel PORTA
 	return
 ;=========== writepassword ============
-;Write a new password stored in the eeprom
+;Armazena a nova senha na eeprom e o
+;numero de chars da senha
+;======================================
 writepass
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
     movlw 0x0
     movwf dataeeaddr
+	bsf STATUS, RP0     ; Bank3
 	;char1
-	banksel EECON1
 waitwrite1
 	btfsc EECON1, WR
 	goto waitwrite1
-	banksel EEADR
-	movf dataeeaddr, 0
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char1, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char1, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
 	;char2
-	incf dataeeaddr, 0
-	banksel EECON1
 waitwrite2
 	btfsc EECON1, WR
-	goto waitwrite2
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char2, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char2, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
 	;char3
-	incf dataeeaddr, 0
-	banksel EECON1
 waitwrite3
 	btfsc EECON1, WR
-	goto waitwrite3
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char3, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char3, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
-	;char4
-	incf dataeeaddr, 0
-	banksel EECON1
+	;char
 waitwrite4
 	btfsc EECON1, WR
-	goto waitwrite4
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char4, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char4, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
 	;char5
-	incf dataeeaddr, 0
-	banksel EECON1
 waitwrite5
 	btfsc EECON1, WR
-	goto waitwrite5
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char5, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char5, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
     ;char6
-	incf dataeeaddr, 0
-	banksel EECON1
 waitwrite6
 	btfsc EECON1, WR
-	goto waitwrite6
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char6, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char6, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
     ;char7
-	incf dataeeaddr, 0
-	banksel EECON1
 waitwrite7
 	btfsc EECON1, WR
-	goto waitwrite7
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char7, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char7, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
     ;char8
-	incf dataeeaddr, 0
-	banksel EECON1
 waitwrite8
 	btfsc EECON1, WR
-	goto waitwrite8
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char8, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char8, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
     ;char9
-	incf dataeeaddr, 0
-	banksel EECON1
 waitwrite9
 	btfsc EECON1, WR
-	goto waitwrite9
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf char9, 0
-	movwf EEDATA
+	banksel PORTA
+	movf char9, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
     ;nrochars
-	incf dataeeaddr, 0
-	banksel EECON1
 waitwritenro
 	btfsc EECON1, WR
-	goto waitwritenro
-	banksel EEADR
-	movf dataeeaddr, 0
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
 	movwf EEADR
-	movf nrochars, 0
-	movwf EEDATA
+	banksel PORTA
+	movf nrochars, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
 	call writeeeprom
     banksel PORTA
-	movlw 0x0
-    movwf dataeeaddr
     return
 ;============== writeeprom ==============
 writeeeprom
-	banksel EECON1
+	movwf EEDATA
+    bsf STATUS, RP0     ; Bank3
 	bcf EECON1, EEPGD
 	bsf EECON1, WREN
 	bcf	INTCON3, GIE
-	movlw 0x055
+	movlw 0x55
 	movwf EECON2
-	movlw 0x0AA
+	movlw 0xAA
 	movwf EECON2
+	bsf EECON1,WR
 	bsf INTCON3, GIE
 	bcf EECON1, WREN
+    bcf STATUS, RP0     ; Bank2
+	incf dataeeaddr, 1
+	bsf STATUS, RP0     ; Bank3
 	return
 ;================= checkkeypad =================
 ;seta cada coluna uma por vez e verifica as 
@@ -911,10 +927,10 @@ R1s
     goto R1s
     return
 ;=================== delay5s ===================
-;Chama delay1s 10 vezes
+;Chama delay1s 5 vezes
 ;===============================================
 delay5s 
-    movlw 0x05          ;10 em decimal
+    movlw 0x05          ;5 em decimal
     movwf Kount5s
 R5s 
     call delay1s
