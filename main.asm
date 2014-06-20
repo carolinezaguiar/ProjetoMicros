@@ -17,10 +17,27 @@ TRISA       EQU 0x85
 TRISB       EQU 0x86
 TRISC       EQU 0x87
 TRISD       EQU 0x88
+INTCON2		EQU 0x10B
+EEDATA		EQU 0x10C
+EEADR		EQU 0x10D
+EEDATH		EQU 0x10E
+EEADRH		EQU 0x10F
+INTCON3		EQU 0x18B
+EECON1		EQU 0x10C
+EECON2		EQU 0x10D
+RD			EQU 0x00
+WR			EQU 0x01
+WREN		EQU 0x02
+EEPGD		EQU 0x07
+W			EQU 0
+F			EQU 0x01
 E           EQU 0x00
 RW          EQU 0x01
 RS          EQU 0x02
+RP0         EQU 0x05
+RP1         EQU 0x06
 LED         EQU 0x00
+FECHADURA   EQU 0x00
 COL0        EQU 0x03
 COL1        EQU 0x01
 COL2        EQU 0x05
@@ -31,6 +48,8 @@ LIN3        EQU 0x04
 ;flags
 KEYPRESSED  EQU 0x00
 LEDON       EQU 0x01
+SENHAERRADA	EQU 0x02
+ABREON      EQU 0X03
 ;ASCII
 ASCESP      EQU 0x20    ;espaco
 ASCEXC      EQU 0x21    ;!
@@ -43,6 +62,7 @@ ASCBRA2     EQU 0x5D    ;]
 ASCTRA      EQU 0x2D    ;-
 ASCCOL      EQU 0x3A    ;:
 ASCBAR      EQU 0x2F    ;/
+ASCPOINT    EQU 0x2E    ;.
 ASC0        EQU 0x30
 ASC1        EQU 0x31
 ASC2        EQU 0x32
@@ -122,27 +142,28 @@ ASCz        EQU 0x7A
     Kount1ms
     Kount10ms
     Kount100ms
+	Kount500ms
     Kount1s
+    Kount5s
     flags
     nrochars
     nrocharsaux
-    auxint
     input
     ENDC
+	CBLOCK 0x120
+	dataeeaddr
+	ENDC
 ;=======================================================
     org 0x0000
     goto START
 ;======================================================
-;==========Interrupt Handler 0x04========
+;============Interrupt Handler 0x04========
     org 0x04
-    incf countT0
-    movwf auxint 
-    movlw 0x26          ;76 (4CH) overflows para 1s, 13H para 1/4s
-    xorwf countT0, 0
-    btfsc STATUS, ZFLAG
+    decfsz countT0, 1
+    goto naoestouro
     call piscaled
+naoestouro
     bcf INTCON, T0IF
-    movf auxint, 0
     retfie
     
 START
@@ -171,6 +192,10 @@ START
     banksel PORTA
     movwf PORTD
     movwf flags
+    movwf nrochars
+    ;inicializacao timer0
+    movlw 0x26          ;76 (4CH) overflows para 1s, 26H para 1/2s
+    movwf countT0
     call delay10ms
     call delay10ms      ;delay de 20ms para setar LCD
     ;configura LCD
@@ -180,193 +205,99 @@ START
     call instw
     movlw 0x06          ;entry mode
     call instw
+    call readpass
+    movlw 0xFF
+    xorwf nrochars, 0
+    ;btfsc STATUS, ZFLAG
     call configurasenha
-    movlw 0x01          ;clear display
-    call instw
-    ;escreve no lcd
-    movlw ASCI
-    call dataw
-    movlw ASCn
-    call dataw
-    movlw ASCs
-    call dataw
-    movlw ASCi
-    call dataw
-    movlw ASCr
-    call dataw
-    movlw ASCa
-    call dataw
-    movlw ASCESP
-    call dataw
-    movlw ASCs
-    call dataw
-    movlw ASCu
-    call dataw
-    movlw ASCa
-    call dataw
-    movlw ASCESP
-    call dataw
-    movlw ASCs
-    call dataw
-    movlw ASCe
-    call dataw
-    movlw ASCn
-    call dataw
-    movlw ASCh
-    call dataw
-    movlw ASCa
-    call dataw
-	movlw 0xC0          ;linha 2 pos 40H (primeira)
-    call instw
-    movlw ASCBRA1
-    call dataw
-    movlw 0xCF          ;linha 2 ultima posicao
-    call instw
-    movlw ASCBRA2
-    call dataw
-    movlw 0xC1          ;linha 2 posicao 2
-    call instw
-polling
+cleardisplay
+    ;escreve no lcd: INSIRA SUA SENHA
+	call msg_insirasuasenha
+    call msg_brackets
+    bcf flags, SENHAERRADA
+    movlw 0x00
+    movwf nrocharsaux
+    incf nrochars, 1
+lesenha1
+    decfsz nrochars, 1
+    goto lesenha2
+    goto lesenha3
+lesenha2
 	call checkkeypad
     movwf input
     movlw 0x00
     xorwf input, 0
-    btfss STATUS, ZFLAG
-    goto imprimechar
-    goto polling
-imprimechar
+    btfsc STATUS, ZFLAG
+    goto lesenha2
     movf input, 0
+    movlw ASCSTAR
     call dataw
-    call delay100ms
-    call delay100ms
-    goto polling
-    
+	call verificachar
+    call delay500ms
+    goto lesenha1
+lesenha3
+    call completacompontos
+    btfsc flags, SENHAERRADA
+    goto incorreta
+    goto correta
+incorreta
+	call msg_senhaincorreta
+    call delay1s
+    call delay1s
+   
+    goto cleardisplay
+correta
+    call msg_portaaberta
+    call abreporta
+	goto cleardisplay
+	 
 ;SUBROTINAS
-;============== configura senha ==============
+;============== configurasenha ==============
+;Escolher uma nova senha para a fechadura
+;Usuario escolhe de quantos digitos sera a
+;nova senha e fornece os novos valores
+;============================================ 
 configurasenha
-    movlw 0x01          ;limpar display
-    call instw
-    ;escreve no lcd
-    movlw ASCS
-    call dataw
-    movlw ASCe
-    call dataw
-    movlw ASCt
-    call dataw
-    movlw ASCa
-    call dataw
-    movlw ASCr
-    call dataw
-    movlw ASCESP
-    call dataw
-    movlw ASCn
-    call dataw
-    movlw ASCo
-    call dataw
-    movlw ASCv
-    call dataw
-    movlw ASCa
-    call dataw
-    movlw ASCESP
-    call dataw
-    movlw ASCs
-    call dataw
-    movlw ASCe
-    call dataw
-    movlw ASCn
-    call dataw
-    movlw ASCh
-    call dataw
-    movlw ASCa
-    call dataw
-	movlw 0xC0          ;linha 2 pos 40H (primeira)
-    call instw
-    movlw ASCCARD
-    call dataw
-    movlw ASCc
-    call dataw
-    movlw ASCh
-    call dataw
-    movlw ASCa
-    call dataw
-    movlw ASCr
-    call dataw
-    movlw ASCs
-    call dataw
-    movlw ASCESP
-    call dataw
-    movlw ASCPAR1
-    call dataw
-    movlw ASC1
-    call dataw
-    movlw ASCTRA
-    call dataw
-    movlw ASC9
-    call dataw
-    movlw ASCPAR2
-    call dataw
-    movlw ASCCOL
-    call dataw
-    movlw ASCESP
-    call dataw
+	call msg_setarnovasenha
+	call msg_chars1to9
 peganrochars
 	call checkkeypad
     movwf input
     movlw 0x00
     xorwf input, 0
-    btfss STATUS, ZFLAG
-    goto pegounrochars
+    btfsc STATUS, ZFLAG
     goto peganrochars
-pegounrochars
     movf input, 0       ;w <- input
     movwf nrochars
+    ;imprime o numero selecionado e faz piscar 3 vezes
     movwf nrocharsaux
     call dataw
     movlw 0xCE          ;linha 2 penultima pos
     call instw
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
+    call delay500ms
     movlw ASCESP
     call dataw
     movlw 0xCE          ;linha 2 penultima pos
     call instw
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
+    call delay500ms
     movf nrochars, 0
     call dataw
     movlw 0xCE          ;linha 2 penultima pos
     call instw
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
+    call delay500ms
     movlw ASCESP
     call dataw
     movlw 0xCE          ;linha 2 penultima pos
     call instw
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
+    call delay500ms
     movf nrochars, 0
     call dataw
     movlw 0xCE          ;linha 2 penultima pos
     call instw
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
-    call delay100ms
+    call delay500ms
+    ;fim imprime o numero selecionado e faz piscar 3 vezes
     
-    ;nro cacacteres entre 1 a 9
+    ;verifica se eh nro cacacteres entre 1 a 9
     movlw ASC0
     xorwf nrochars, 0
     btfsc STATUS, ZFLAG
@@ -379,207 +310,302 @@ pegounrochars
     xorwf nrochars, 0
     btfsc STATUS, ZFLAG
     goto nrocharinvalido
-
-    goto continuaconfiguracao1
+    goto continuaconfiguracao
     
+;valor invalido para nro de char
 nrocharinvalido
-    movlw 0x01          ;limpar display
-    call instw
-    ;escreve no lcd
-    movlw ASCN
-    call dataw
-    movlw ASCu
-    call dataw
-    movlw ASCm
-    call dataw
-    movlw ASCe
-    call dataw
-    movlw ASCr
-    call dataw
-    movlw ASCo
-    call dataw
-    movlw ASCESP
-    call dataw
-    movlw ASCI
-    call dataw
-    movlw ASCn
-    call dataw
-    movlw ASCv
-    call dataw
-    movlw ASCa
-    call dataw
-    movlw ASCl
-    call dataw
-    movlw ASCi
-    call dataw
-    movlw ASCd
-    call dataw
-    movlw ASCo
-    call dataw
-    movlw ASCEXC
-    call dataw
+	call msg_numeroinvalido
     call delay1s
     call delay1s
     goto configurasenha
 
-continuaconfiguracao1
-    movlw 0x01          ;limpar display
-    call instw
-    ;escreve no lcd
-    movlw ASCN
-    call dataw
-    movlw ASCo
-    call dataw
-    movlw ASCv
-    call dataw
-    movlw ASCa
-    call dataw
-    movlw ASCESP
-    call dataw
-    movlw ASCs
-    call dataw
-    movlw ASCe
-    call dataw
-    movlw ASCn
-    call dataw
-    movlw ASCh
-    call dataw
-    movlw ASCa
-    call dataw
-    movlw ASCESP
-    call dataw
-    movlw ASCBRA1
-    call dataw
-    movlw ASC1
-    call dataw
-    movlw ASCBAR
-    call dataw
-    movlw ASC2
-    call dataw
-    movlw ASCBRA2
-    call dataw
+;usuario escolhe a nova senha
+continuaconfiguracao
+	call msg_setarnovasenha
+    call msg_brackets
     movlw 0x00
     movwf nrocharsaux
-    
-setasenha1a
-    decfsz nrochars
-    goto setasenha1b
-    goto setasenha2a
-setasenha1b
+	movlw 0x30
+	subwf nrochars, 1   ;subtrai 30 pois esta em ASCII
+    incf nrochars, 1
+setasenha1
+    decfsz nrochars, 1
+    goto setasenha2
+    goto setasenha3
+;le char do keypad
+setasenha2
 	call checkkeypad
     movwf input
     movlw 0x00
     xorwf input, 0
-    btfss STATUS, ZFLAG
-    goto setasenha1c
-    goto setasenha1a
-setasenha1c
+    btfsc STATUS, ZFLAG
+    goto setasenha2
     movf input, 0
     movlw ASCSTAR
     call dataw
+	call descobrechar
+    call delay500ms
+    goto setasenha1
+;nova senha foi inserida
+;armazena na eeprom
+setasenha3
+    call completacompontos
+    call msg_senhasetada
+    call delay1s
+    ;call writepass
+    return
+;============== completacompontos ==============
+;apos a senha ter sido inserida, completa com 
+;pontos ate o final da segunda linha, ao final 
+;nrochars contera o numero inicial de caracteres 
+;da senha
+;===============================================
+completacompontos
+    movf nrocharsaux, 0
+    movwf nrochars
+    movlw 0x0E			;14 em decimal
+    movwf nrocharsaux
+    movf nrochars, 0
+    subwf nrocharsaux, 1
+    incf nrocharsaux, 1
+completacompontos1
+    decfsz nrocharsaux, 1
+    goto completacompontos2
+    goto completacompontos3
+completacompontos2
+    movlw ASCPOINT
+    call dataw
     call delay100ms
-    call delay100ms
-    goto setasenha1a
-setasenha2a
+    goto completacompontos1
+completacompontos3
     return
     
+;================= descobrechar ================
+;descobre qual char esta sendo inserido de acordo
+;com as variaveis nrocharsaux, inicialmente em 0
+;antes de chamar essa rotina pela primeira vez
+;o numero de vezes que essa rotina e chamada deve
+;ser controlado externamente de acordo com o numero
+;de caracteres que a senha deve possuir
+;===============================================	
 descobrechar
-    incf nrocharsaux
+    incf nrocharsaux, 1
     movlw 0x01
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto primeirochar
+    goto primeirochard
     movlw 0x02
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto segundochar
+    goto segundochard
     movlw 0x03
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto terceirochar
+    goto terceirochard
     movlw 0x04
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto quartochar
+    goto quartochard
     movlw 0x05
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto quintochar
+    goto quintochard
     movlw 0x06
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto sextochar
+    goto sextochard
     movlw 0x07
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto setimochar
+    goto setimochard
     movlw 0x08
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto oitavochar
+    goto oitavochard
     movlw 0x09
     xorwf nrocharsaux, 0
     btfsc STATUS, ZFLAG
-    goto nonochar
-    
+    goto nonochard
     goto descobrechar ;nao deveria acontecer
-
-primeirochar
+primeirochard
     movf input, 0
     movwf char1
     return
-segundochar
+segundochard
     movf input, 0
     movwf char2
     return
-terceirochar
+terceirochard
     movf input, 0
     movwf char3
     return
-quartochar
+quartochard
     movf input, 0
     movwf char4
     return
-quintochar
+quintochard
     movf input, 0
     movwf char5
     return
-sextochar
+sextochard
     movf input, 0
     movwf char6
     return
-setimochar
+setimochard
     movf input, 0
     movwf char7
     return
-oitavochar
+oitavochard
     movf input, 0
     movwf char8
     return
-nonochar
+nonochard
     movf input, 0
     movwf char9
     return
-    
-;============== piscaled ==============
+;================= verificachar ================
+;semelhante a rotina descobrechar, porem agora 
+;os caracteres de entrada sao checados conforme
+;sao lidos e se algum nao condiz com as variaveis
+;char[n] onde a senha correta foi armazenada a flag
+;SENHAERRADA e setada
+;===============================================
+verificachar
+    incf nrocharsaux, 1
+    movlw 0x01
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto primeirocharv
+    movlw 0x02
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto segundocharv
+    movlw 0x03
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto terceirocharv
+    movlw 0x04
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto quartocharv
+    movlw 0x05
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto quintocharv
+    movlw 0x06
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto sextocharv
+    movlw 0x07
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto setimocharv
+    movlw 0x08
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto oitavocharv
+    movlw 0x09
+    xorwf nrocharsaux, 0
+    btfsc STATUS, ZFLAG
+    goto nonocharv
+    goto verificachar ;nao deveria acontecer
+primeirocharv
+    movf input, 0
+    xorwf char1, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+segundocharv
+    movf input, 0
+    xorwf char2, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+terceirocharv
+    movf input, 0
+    xorwf char3, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+quartocharv
+    movf input, 0
+    xorwf char4, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+quintocharv
+    movf input, 0
+    xorwf char5, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+sextocharv
+    movf input, 0
+    xorwf char6, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+setimocharv
+    movf input, 0
+    xorwf char7, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+oitavocharv
+    movf input, 0
+    xorwf char8, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+nonocharv
+    movf input, 0
+    xorwf char9, 0
+    btfss STATUS, ZFLAG
+    goto senhaerrada
+    return
+senhaerrada
+    bsf flags, SENHAERRADA 
+    return
+;================== abre porta =================
+;Mantém o LED aceso por 3s para indicar
+;que a porta está aberta
+;===============================================
+abreporta
+    bsf flags, ABREON
+    bsf PORTB, FECHADURA
+    call delay1s
+    call delay1s
+    call delay1s
+    call delay1s
+    call delay1s
+    bcf flags, ABREON
+    bcf PORTB, FECHADURA
+    return
+;================== piscaled ===================
+;rotina para piscar o LED periodicamente
+;garantindo que o microcontrolador esta
+;funcionando corretamente
+;===============================================
 piscaled
     btfsc flags, LEDON
     goto desligaled
     goto ligaled
-zeratimer
-    clrf countT0
+resetatimer
+    movlw 0x26          ;76 (4CH) overflows para 1s, 26H para 1/2s
+    movwf countT0
     return
 desligaled
     bcf flags, LEDON
     bcf PORTA, LED
-    goto zeratimer
+    goto resetatimer
 ligaled
     bsf flags, LEDON
     bsf PORTA, LED
-    goto zeratimer
-;============== instw ==============
-;instruction write no LCD
-;instrucao a ser escrita armazenada no W antes da chamada
+    goto resetatimer
+;=================== instw =====================
+;instruction write no LCD instrucao a ser 
+;escrita armazenada no W antes da chamada
+;===============================================
 instw 
     movwf PORTC
     bcf PORTD, RS
@@ -587,8 +613,10 @@ instw
     bcf PORTD, E
     call delay10ms
     return
-;============== dataw ==============
-;dado a ser escrito armazenado no W antes da chamada
+;==================== dataw ====================
+;data write no LCD dado a ser escrito 
+;armazenado no W antes da chamada
+;===============================================
 dataw 
     movwf PORTC
     bsf PORTD, RS
@@ -596,7 +624,206 @@ dataw
     bcf PORTD, E
     call delay10ms
     return
-;============== checkkeypad ==============
+;=========== readpassword =============
+;Lê a senha armazenada na eeprom 
+;======================================
+readpass
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+    movlw 0x00
+    movwf dataeeaddr
+	call readeeprom
+	movwf char1
+	call readeeprom
+	movwf char2
+	call readeeprom
+	movwf char3
+	call readeeprom
+	movwf char4
+	call readeeprom
+	movwf char5
+	call readeeprom
+	movwf char6
+	call readeeprom
+	movwf char7
+	call readeeprom
+	movwf char8
+	call readeeprom
+	movwf char9
+	call readeeprom
+	movwf nrochars
+    return
+;============== readeeprom ===============
+readeeprom
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+    bsf STATUS, RP0     ; Bank3
+	bcf EECON1, EEPGD
+	bsf EECON1, RD
+    bcf STATUS, RP0     ; Bank2
+	movf EEDATA, W
+	incf dataeeaddr, 1
+    banksel PORTA
+	return
+;=========== writepassword ============
+;Armazena a nova senha na eeprom e o
+;numero de chars da senha
+;======================================
+writepass
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+    movlw 0x0
+    movwf dataeeaddr
+	bsf STATUS, RP0     ; Bank3
+	;char1
+waitwrite1
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char1, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+	;char2
+waitwrite2
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char2, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+	;char3
+waitwrite3
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char3, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+	;char
+waitwrite4
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char4, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+	;char5
+waitwrite5
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char5, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+    ;char6
+waitwrite6
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char6, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+    ;char7
+waitwrite7
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char7, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+    ;char8
+waitwrite8
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char8, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+    ;char9
+waitwrite9
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf char9, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+    ;nrochars
+waitwritenro
+	btfsc EECON1, WR
+	goto waitwrite1
+    bcf STATUS, RP0     ; Bank2
+	movf dataeeaddr, W
+	movwf EEADR
+	banksel PORTA
+	movf nrochars, W
+	bsf STATUS, RP1
+    bcf STATUS, RP0     ; Bank2
+	call writeeeprom
+    banksel PORTA
+    return
+;============== writeeprom ==============
+writeeeprom
+	movwf EEDATA
+    bsf STATUS, RP0     ; Bank3
+	bcf EECON1, EEPGD
+	bsf EECON1, WREN
+	bcf	INTCON3, GIE
+	movlw 0x55
+	movwf EECON2
+	movlw 0xAA
+	movwf EECON2
+	bsf EECON1,WR
+	bsf INTCON3, GIE
+	bcf EECON1, WREN
+    bcf STATUS, RP0     ; Bank2
+	incf dataeeaddr, 1
+	bsf STATUS, RP0     ; Bank3
+	return
+;================= checkkeypad =================
+;seta cada coluna uma por vez e verifica as 
+;linhas para descobrir se ha uma tecla apertada. 
+;O codigo ASC da tecla apertada se encontrara em 
+;WREG. Se nenhuma tecla estiver apertada WREG 
+;contera o valor 0x00
+;===============================================
 checkkeypad
 	movlw 0x00
 	; scan the 1st column
@@ -633,56 +860,334 @@ checkkeypad
 	movlw ASCCARD		
 	bcf PORTB, COL2
     return
-;============== Delay100us ==============
-;Precisa 500 ciclos de instrucao, pois uma instrucao -> 0.2 us
-;A formula para 500 ciclos e:
-; 500 =3*165 + 5
+	
+;****************************************
+;**************** DELAYS ****************
+;****************************************
+;================== delay100us =================
+;Precisa 500 ciclos de instrucao, pois uma instrucao 
+;leva 0.2 us A formula para 500 ciclos e:
+;500 =3*165 + 5
+;===============================================
 delay100us 
     movlw 0xA5          ;165 em decimal
     movwf Kount100us
 R100us 
-    decfsz Kount100us
+    decfsz Kount100us, 1
     goto R100us
     return
-;============== Delay1ms ==============
+;================== delay1ms ===================
 ;Chama delay100us 10 vezes
+;===============================================
 delay1ms 
     movlw 0x0A          ;10 em decimal
     movwf Kount1ms
 R1ms 
     call delay100us
-    decfsz Kount1ms
+    decfsz Kount1ms, 1
     goto R1ms
     return
-;============== Delay10ms ==============
+;================== delay10ms ==================
 ;Chama delay1ms 10 vezes
+;===============================================
 delay10ms 
     movlw 0x0A          ;10 em decimal
     movwf Kount10ms
 R10ms 
     call delay1ms
-    decfsz Kount10ms
+    decfsz Kount10ms, 1
     goto R10ms
     return
-;============== Delay100ms ==============
+;================= delay100ms ==================
 ;Chama delay10ms 10 vezes
+;===============================================
 delay100ms 
     movlw 0x0A          ;10 em decimal
     movwf Kount100ms
 R100ms 
     call delay10ms
-    decfsz Kount100ms
+    decfsz Kount100ms, 1
     goto R100ms
     return
-;============== Delay1s ==============
+;================= delay500ms ==================
+;Chama delay100ms 5 vezes
+;===============================================
+delay500ms 
+    movlw 0x05          ;5 em decimal
+    movwf Kount500ms
+R500ms 
+    call delay100ms
+    decfsz Kount500ms, 1
+    goto R500ms
+    return
+;=================== delay1s ===================
 ;Chama delay100ms 10 vezes
+;===============================================
 delay1s 
     movlw 0x0A          ;10 em decimal
     movwf Kount1s
 R1s 
     call delay100ms
-    decfsz Kount1s
+    decfsz Kount1s, 1
     goto R1s
-    return
+    return	
+;****************************************
+;**************** MENSAGENS *************
+;****************************************
+;============ brackets na linha 2 ==========
+msg_brackets
+	movlw 0xC0          ;linha 2 pos 40H (primeira)
+    call instw
+    movlw ASCBRA1
+    call dataw
+    movlw 0xCF          ;linha 2 ultima posicao
+    call instw
+    movlw ASCBRA2
+    call dataw
+    movlw 0xC1          ;linha 2 posicao 2
+    call instw
+	return
+;============ Setar nova senha ==========
+msg_setarnovasenha
+    movlw 0x01          ;limpar display
+    call instw
+    movlw ASCS
+    call dataw
+    movlw ASCe
+    call dataw
+    movlw ASCt
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCr
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCn
+    call dataw
+    movlw ASCo
+    call dataw
+    movlw ASCv
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCs
+    call dataw
+    movlw ASCe
+    call dataw
+    movlw ASCn
+    call dataw
+    movlw ASCh
+    call dataw
+    movlw ASCa
+    call dataw
+	return
+;============ Senha setada! ==========
+msg_senhasetada
+    movlw 0x01          ;limpar display
+    call instw
+    movlw ASCS
+    call dataw
+    movlw ASCe
+    call dataw
+    movlw ASCn
+    call dataw
+    movlw ASCh
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCS
+    call dataw
+    movlw ASCe
+    call dataw
+    movlw ASCt
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCd
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCEXC
+    call dataw
+	return
+;============ Insira sua senha ==========
+msg_insirasuasenha
+    movlw 0x01          ;clear display
+    call instw
+	movlw ASCI
+    call dataw
+    movlw ASCn
+    call dataw
+    movlw ASCs
+    call dataw
+    movlw ASCi
+    call dataw
+    movlw ASCr
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCs
+    call dataw
+    movlw ASCu
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCs
+    call dataw
+    movlw ASCe
+    call dataw
+    movlw ASCn
+    call dataw
+    movlw ASCh
+    call dataw
+    movlw ASCa
+    call dataw
+	return
+;========== Numero Invalido! =========
+msg_numeroinvalido
+    movlw 0x01          ;limpar display
+    call instw
+    movlw ASCN
+    call dataw
+    movlw ASCu
+    call dataw
+    movlw ASCm
+    call dataw
+    movlw ASCe
+    call dataw
+    movlw ASCr
+    call dataw
+    movlw ASCo
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCI
+    call dataw
+    movlw ASCn
+    call dataw
+    movlw ASCv
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCl
+    call dataw
+    movlw ASCi
+    call dataw
+    movlw ASCd
+    call dataw
+    movlw ASCo
+    call dataw
+    movlw ASCEXC
+    call dataw
+	return
+;========== #Chars(1-9) =========	
+msg_chars1to9
+	movlw 0xC0          ;linha 2 pos 40H (primeira)
+    call instw
+    movlw ASCCARD 
+    call dataw
+    movlw ASCc
+    call dataw
+    movlw ASCh
+    call dataw
+    movlw ASCa
+    call dataw
+    movlw ASCr
+    call dataw
+    movlw ASCs
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCPAR1
+    call dataw
+    movlw ASC1
+    call dataw
+    movlw ASCTRA
+    call dataw
+    movlw ASC9
+    call dataw
+    movlw ASCPAR2
+    call dataw
+    movlw ASCCOL
+    call dataw
+    movlw ASCESP
+    call dataw
+	return
+;========== SENHA INCORRETA =========	
+msg_senhaincorreta
+    movlw 0x01          ;limpar display
+    call instw
+    movlw ASCS
+    call dataw
+    movlw ASCE
+    call dataw
+    movlw ASCN
+    call dataw
+    movlw ASCH
+    call dataw
+    movlw ASCA
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCI
+    call dataw
+    movlw ASCN
+    call dataw
+    movlw ASCC
+    call dataw
+    movlw ASCO
+    call dataw
+    movlw ASCR
+    call dataw
+    movlw ASCR
+    call dataw
+    movlw ASCE
+    call dataw
+    movlw ASCT
+    call dataw
+    movlw ASCA
+    call dataw
+    movlw ASCEXC
+    call dataw
+	return
+;========== PORTA ABERTA =========	
+msg_portaaberta
+    movlw 0x01          ;limpar display
+    call instw
+    movlw ASCP
+    call dataw
+    movlw ASCO
+    call dataw
+    movlw ASCR
+    call dataw
+    movlw ASCT
+    call dataw
+    movlw ASCA
+    call dataw
+    movlw ASCESP
+    call dataw
+    movlw ASCA
+    call dataw
+    movlw ASCB
+    call dataw
+    movlw ASCE
+    call dataw
+    movlw ASCR
+    call dataw
+    movlw ASCT
+    call dataw
+    movlw ASCA
+    call dataw
+	return
+	
 ;================= FIM =================
     END         ;Fim do codigo
