@@ -2,10 +2,14 @@
 
 STATUS      EQU 0x03
 INTCON      EQU 0x0B
+INTF        EQU 0x01
 GIE         EQU 0x07
+PEIE        EQU 0x06
+INTE        EQU 0x04
 T0IE        EQU 0x05
 T0IF        EQU 0x02
 OPTREG      EQU 0x81
+NOT_RBPU    EQU 0x07
 TMR0        EQU 0x01
 STATUS      EQU 0x03
 ZFLAG       EQU 0x02
@@ -37,19 +41,20 @@ RS          EQU 0x02
 RP0         EQU 0x05
 RP1         EQU 0x06
 LED         EQU 0x00
-FECHADURA   EQU 0x00
-COL0        EQU 0x03
-COL1        EQU 0x01
-COL2        EQU 0x05
-LIN0        EQU 0x02
-LIN1        EQU 0x07
-LIN2        EQU 0x06
+FECHADURA   EQU 0x01
+COL0        EQU 0x05
+COL1        EQU 0x07
+COL2        EQU 0x03
+LIN0        EQU 0x06
+LIN1        EQU 0x01
+LIN2        EQU 0x02
 LIN3        EQU 0x04
 ;flags
 KEYPRESSED  EQU 0x00
 LEDON       EQU 0x01
 SENHAERRADA	EQU 0x02
-ABREON      EQU 0X03
+ABREON      EQU 0x03
+ENDCONFIG   EQU 0x04
 ;ASCII
 ASCESP      EQU 0x20    ;espaco
 ASCEXC      EQU 0x21    ;!
@@ -148,6 +153,7 @@ ASCz        EQU 0x7A
     flags
     nrochars
     nrocharsaux
+    abreportaaux
     input
     ENDC
 	CBLOCK 0x120
@@ -159,6 +165,20 @@ ASCz        EQU 0x7A
 ;======================================================
 ;============Interrupt Handler 0x04========
     org 0x04
+    btfsc INTCON, T0IF
+    goto interrupcaotimer
+    btfsc INTCON, INTF
+    goto interrupcaorb0
+    retfie  ;nao deveria acontecer
+interrupcaorb0
+    bcf INTCON, INTF
+    btfss flags, ENDCONFIG
+    retfie
+    movwf abreportaaux
+    call abreporta
+    movf abreportaaux, 0
+    retfie
+interrupcaotimer
     decfsz countT0, 1
     goto naoestouro
     call piscaled
@@ -170,13 +190,15 @@ START
     ;setar interrupcao
     banksel INTCON
     bsf INTCON, GIE
+    bsf INTCON, PEIE
+    bsf INTCON, INTE
     bsf INTCON, T0IE
     clrf TMR0
     banksel OPTREG
     movlw 0xC7          ;pre-scaler em 256
     movwf OPTREG
+    bcf OPTREG, NOT_RBPU
     ;configura entradas saidas
-    banksel TRISB
     bsf TRISB, 0x00
     bcf TRISB, COL0
     bcf TRISB, COL1
@@ -193,6 +215,7 @@ START
     movwf PORTD
     movwf flags
     movwf nrochars
+    bcf flags, ENDCONFIG
     ;inicializacao timer0
     movlw 0x26          ;76 (4CH) overflows para 1s, 26H para 1/2s
     movwf countT0
@@ -210,6 +233,7 @@ START
     xorwf nrochars, 0
     ;btfsc STATUS, ZFLAG
     call configurasenha
+    bsf flags, ENDCONFIG
 cleardisplay
     ;escreve no lcd: INSIRA SUA SENHA
 	call msg_insirasuasenha
@@ -242,9 +266,10 @@ lesenha3
     goto correta
 incorreta
 	call msg_senhaincorreta
-    call delay1s
-    call delay1s
-   
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
     goto cleardisplay
 correta
     call msg_portaaberta
@@ -315,8 +340,10 @@ peganrochars
 ;valor invalido para nro de char
 nrocharinvalido
 	call msg_numeroinvalido
-    call delay1s
-    call delay1s
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
     goto configurasenha
 
 ;usuario escolhe a nova senha
@@ -351,7 +378,8 @@ setasenha2
 setasenha3
     call completacompontos
     call msg_senhasetada
-    call delay1s
+    call delay500ms
+    call delay500ms
     ;call writepass
     return
 ;============== completacompontos ==============
@@ -572,14 +600,19 @@ senhaerrada
 ;===============================================
 abreporta
     bsf flags, ABREON
-    bsf PORTB, FECHADURA
-    call delay1s
-    call delay1s
-    call delay1s
-    call delay1s
-    call delay1s
+    bsf PORTA, FECHADURA
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    call delay500ms
+    bcf PORTA, FECHADURA
     bcf flags, ABREON
-    bcf PORTB, FECHADURA
     return
 ;================== piscaled ===================
 ;rotina para piscar o LED periodicamente
@@ -595,12 +628,26 @@ resetatimer
     movwf countT0
     return
 desligaled
+    btfsc flags, ABREON
+    goto abreonledoff
     bcf flags, LEDON
     bcf PORTA, LED
     goto resetatimer
+abreonledoff
+    movlw 0x02
+    movwf PORTA
+    bcf flags, LEDON
+    goto resetatimer
 ligaled
+    btfsc flags, ABREON
+    goto abreonledon
     bsf flags, LEDON
     bsf PORTA, LED
+    goto resetatimer
+abreonledon
+    movlw 0x03
+    movwf PORTA
+    bsf flags, LEDON
     goto resetatimer
 ;=================== instw =====================
 ;instruction write no LCD instrucao a ser 
@@ -827,38 +874,47 @@ writeeeprom
 checkkeypad
 	movlw 0x00
 	; scan the 1st column
-	bsf PORTB, COL0
-	btfsc PORTB, LIN0		;1?
-	movlw ASC1	
-	btfsc PORTB, LIN1		;4?
-	movlw ASC4	
-	btfsc PORTB, LIN2		;7?
-	movlw ASC7
-	btfsc PORTB, LIN3		;*?
-	movlw ASCSTAR
 	bcf PORTB, COL0
+    movwf input
+    call delay10ms
+    movf input, 0
+	btfss PORTB, LIN0		;1?
+	movlw ASC1	
+	btfss PORTB, LIN1		;4?
+	movlw ASC4	
+	btfss PORTB, LIN2		;7?
+	movlw ASC7
+	btfss PORTB, LIN3		;*?
+	movlw ASCSTAR
+	bsf PORTB, COL0
 	; scan the 2nd column
-	bsf PORTB, COL1 
-	btfsc PORTB, LIN0		;2?
+	bcf PORTB, COL1 
+    movwf input
+    call delay10ms
+    movf input, 0
+	btfss PORTB, LIN0		;2?
 	movlw ASC2
-	btfsc PORTB, LIN1		;5?
+	btfss PORTB, LIN1		;5?
 	movlw ASC5	
-	btfsc PORTB, LIN2		;8?
+	btfss PORTB, LIN2		;8?
 	movlw ASC8
-	btfsc PORTB, LIN3		;0?
+	btfss PORTB, LIN3		;0?
 	movlw ASC0
-	bcf PORTB, COL1
+	bsf PORTB, COL1
 	; scan the 3rd column
-	bsf PORTB, COL2   
-	btfsc PORTB, LIN0		;3?
-	movlw ASC3		
-	btfsc PORTB, LIN1		;6?
-	movlw ASC6		
-	btfsc PORTB, LIN2		;9?
-	movlw ASC9		
-	btfsc PORTB, LIN3		;#?
-	movlw ASCCARD		
 	bcf PORTB, COL2
+    movwf input
+    call delay10ms
+    movf input, 0    
+	btfss PORTB, LIN0		;3?
+	movlw ASC3		
+	btfss PORTB, LIN1		;6?
+	movlw ASC6		
+	btfss PORTB, LIN2		;9?
+	movlw ASC9		
+	btfss PORTB, LIN3		;#?
+	movlw ASCCARD		
+	bsf PORTB, COL2
     return
 	
 ;****************************************
@@ -888,49 +944,38 @@ R1ms
     goto R1ms
     return
 ;================== delay10ms ==================
-;Chama delay1ms 10 vezes
+;Chama delay100s 100 vezes
 ;===============================================
 delay10ms 
-    movlw 0x0A          ;10 em decimal
+    movlw 0x64          ;100 em decimal
     movwf Kount10ms
 R10ms 
-    call delay1ms
+    call delay100us
     decfsz Kount10ms, 1
     goto R10ms
     return
 ;================= delay100ms ==================
-;Chama delay10ms 10 vezes
+;Chama delay1ms 100 vezes
 ;===============================================
 delay100ms 
-    movlw 0x0A          ;10 em decimal
+    movlw 0x64          ;100 em decimal
     movwf Kount100ms
 R100ms 
-    call delay10ms
+    call delay1ms
     decfsz Kount100ms, 1
     goto R100ms
     return
 ;================= delay500ms ==================
-;Chama delay100ms 5 vezes
+;Chama delay10ms 50 vezes
 ;===============================================
 delay500ms 
-    movlw 0x05          ;5 em decimal
+    movlw 0x32          ;50 em decimal
     movwf Kount500ms
 R500ms 
-    call delay100ms
+    call delay10ms
     decfsz Kount500ms, 1
     goto R500ms
     return
-;=================== delay1s ===================
-;Chama delay100ms 10 vezes
-;===============================================
-delay1s 
-    movlw 0x0A          ;10 em decimal
-    movwf Kount1s
-R1s 
-    call delay100ms
-    decfsz Kount1s, 1
-    goto R1s
-    return	
 ;****************************************
 ;**************** MENSAGENS *************
 ;****************************************
